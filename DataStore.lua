@@ -10,7 +10,8 @@ local DEFAULT_DB = {
         minimapButtonAngle = 225,
         autoShowInBG = true,
         maxHistoryEntries = 100,
-        cacheExpireDays = 7,
+        cacheExpireHours = 4,  -- Cache expires after 4 hours
+        debugMode = false,
     },
     history = {},
     playerCache = {},
@@ -25,6 +26,12 @@ function addon:InitializeDataStore()
 
     -- Merge defaults with saved data
     self.db = self:MergeDefaults(BGGearScoreDB, DEFAULT_DB)
+
+    -- Migrate old cacheExpireDays to cacheExpireHours
+    if self.db.settings.cacheExpireDays then
+        self.db.settings.cacheExpireHours = self.db.settings.cacheExpireDays * 24
+        self.db.settings.cacheExpireDays = nil
+    end
 
     -- Clean up old cache entries
     self:CleanupCache()
@@ -90,7 +97,7 @@ function addon:GetCachedPlayer(playerName)
     local cached = self.db.playerCache[playerName]
     if cached then
         -- Check if cache is still valid (within expiration period)
-        local expireTime = self.db.settings.cacheExpireDays * 24 * 60 * 60
+        local expireTime = self.db.settings.cacheExpireHours * 60 * 60
         if (time() - (cached.timestamp or 0)) < expireTime then
             return cached
         else
@@ -126,7 +133,7 @@ end
 function addon:CleanupCache()
     if not self.db or not self.db.playerCache then return end
 
-    local expireTime = self.db.settings.cacheExpireDays * 24 * 60 * 60
+    local expireTime = self.db.settings.cacheExpireHours * 60 * 60
     local currentTime = time()
     local removed = 0
 
@@ -340,7 +347,8 @@ end
 
 -- Calculate win prediction for current match
 -- Returns: prediction (0-100), needsMoreMatches (boolean), matchesNeeded (number)
-function addon:CalculateWinPrediction(mapName, friendlyGS, friendlyLvl, enemyLvl)
+-- friendlyRating/enemyRating are optional - combat ratings based on team performance (after 2 min)
+function addon:CalculateWinPrediction(mapName, friendlyGS, friendlyLvl, enemyLvl, friendlyRating, enemyRating)
     local MIN_MATCHES = 10
 
     local mapStats = self:GetMapStats(mapName)
@@ -366,13 +374,22 @@ function addon:CalculateWinPrediction(mapName, friendlyGS, friendlyLvl, enemyLvl
         lvlBonus = levelDiff * 3
     end
 
+    -- Combat performance comparison bonus (only when both ratings are available)
+    -- Uses actual combat performance instead of just gear score for more accurate prediction
+    -- +5% per 100 rating advantage (stronger weight since this is real performance data)
+    local combatBonus = 0
+    if friendlyRating and enemyRating then
+        local ratingDiff = friendlyRating - enemyRating
+        combatBonus = (ratingDiff / 100) * 5
+    end
+
     -- Calculate final prediction, clamped to 5-95%
-    local prediction = baseWinRate + gsBonus + lvlBonus
+    local prediction = baseWinRate + gsBonus + lvlBonus + combatBonus
     prediction = math.max(5, math.min(95, prediction))
 
     addon:Debug("Win prediction:", string.format(
-        "base=%.1f%%, gsBonus=%.1f%%, lvlBonus=%.1f%%, final=%.1f%%",
-        baseWinRate, gsBonus, lvlBonus, prediction
+        "base=%.1f%%, gsBonus=%.1f%%, lvlBonus=%.1f%%, combatBonus=%.1f%%, final=%.1f%%",
+        baseWinRate, gsBonus, lvlBonus, combatBonus, prediction
     ))
 
     return math.floor(prediction + 0.5), false, 0

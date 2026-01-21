@@ -17,6 +17,8 @@ local updateTimer = nil
 local currentPrediction = nil  -- Current win prediction for this match
 local predictionNeedsMoreMatches = false
 local predictionMatchesNeeded = 0
+local currentEnemyRating = nil  -- Combat rating estimate for enemy team
+local currentFriendlyRating = nil  -- Combat rating estimate for friendly team
 
 -- Initialize battleground tracker
 function addon:InitializeBattlegroundTracker()
@@ -101,10 +103,12 @@ function addon:OnEnterBattleground()
     players[0] = {}
     players[1] = {}
 
-    -- Reset prediction
+    -- Reset prediction and combat ratings
     currentPrediction = nil
     predictionNeedsMoreMatches = false
     predictionMatchesNeeded = 0
+    currentEnemyRating = nil
+    currentFriendlyRating = nil
 
     -- Clear session cache
     self:ClearSessionCache()
@@ -310,8 +314,12 @@ function addon:UpdateWinPrediction()
     local friendlyLvl = friendlyStats.avgLevel or 0
     local enemyLvl = (enemyStats and enemyStats.avgLevel) or 0
 
+    -- Calculate and store combat ratings for both teams
+    currentEnemyRating = self:CalculateEnemyCombatRating()
+    currentFriendlyRating = self:CalculateFriendlyCombatRating()
+
     local prediction, needsMore, matchesNeeded = self:CalculateWinPrediction(
-        currentBG, friendlyGS, friendlyLvl, enemyLvl
+        currentBG, friendlyGS, friendlyLvl, enemyLvl, currentFriendlyRating, currentEnemyRating
     )
 
     currentPrediction = prediction
@@ -507,4 +515,107 @@ function addon:OnPlayerInspected(playerName, data)
     if self.UpdateScoreboardUI then
         self:UpdateScoreboardUI()
     end
+end
+
+-- Constants for combat rating calculation
+local COMBAT_RATING_MIN_MINUTES = 2  -- Minimum match time before calculating
+local COMBAT_RATING_MIN_GS = 400     -- Minimum rating floor
+local COMBAT_RATING_MAX_GS = 700     -- Maximum rating ceiling
+
+-- Scaling factor to convert DPM+HPM to GS-equivalent rating
+-- Tuned based on typical TBC BG performance:
+-- Average player ~500 GS does roughly 1500 DPM + 500 HPM = 2000 combined
+-- So we scale combined performance to match GS range
+local COMBAT_RATING_SCALE = 0.25  -- 2000 combined / 0.25 = 500 GS equivalent
+
+-- Calculate combat rating for a faction based on scoreboard performance
+function addon:CalculateCombatRating(faction)
+    if not bgStartTime then return nil end
+
+    -- Check minimum match time (2 minutes)
+    local matchMinutes = (GetTime() - bgStartTime) / 60
+    if matchMinutes < COMBAT_RATING_MIN_MINUTES then
+        return nil
+    end
+
+    -- Get team stats for the specified faction
+    local allStats = self:GetTeamStats()
+    local teamStats = allStats[faction]
+
+    if not teamStats or teamStats.totalCount == 0 then
+        return nil
+    end
+
+    -- Calculate damage per minute and healing per minute for the team
+    local totalDamage = teamStats.totalDamage or 0
+    local totalHealing = teamStats.totalHealing or 0
+    local playerCount = teamStats.totalCount
+
+    local dpm = totalDamage / matchMinutes
+    local hpm = totalHealing / matchMinutes
+
+    -- Average performance per player
+    local avgPerformance = (dpm + hpm) / playerCount
+
+    -- Scale to GS-equivalent rating
+    local combatRating = avgPerformance * COMBAT_RATING_SCALE
+
+    -- Clamp to reasonable GS range
+    combatRating = math.max(COMBAT_RATING_MIN_GS, math.min(COMBAT_RATING_MAX_GS, combatRating))
+
+    -- Round to nearest integer
+    combatRating = math.floor(combatRating + 0.5)
+
+    return combatRating, matchMinutes
+end
+
+-- Calculate enemy combat rating (convenience wrapper)
+function addon:CalculateEnemyCombatRating()
+    local enemyFaction = playerFaction == 0 and 1 or 0
+    local rating, matchMinutes = self:CalculateCombatRating(enemyFaction)
+
+    if rating then
+        addon:Debug("Enemy combat rating:", string.format(
+            "faction=%d, minutes=%.1f, rating=%d",
+            enemyFaction, matchMinutes, rating
+        ))
+    end
+
+    return rating
+end
+
+-- Calculate friendly combat rating (convenience wrapper)
+function addon:CalculateFriendlyCombatRating()
+    local rating, matchMinutes = self:CalculateCombatRating(playerFaction)
+
+    if rating then
+        addon:Debug("Friendly combat rating:", string.format(
+            "faction=%d, minutes=%.1f, rating=%d",
+            playerFaction, matchMinutes, rating
+        ))
+    end
+
+    return rating
+end
+
+-- Get the current enemy combat rating (or nil if still calculating)
+function addon:GetEnemyCombatRating()
+    return currentEnemyRating
+end
+
+-- Get the current friendly combat rating (or nil if still calculating)
+function addon:GetFriendlyCombatRating()
+    return currentFriendlyRating
+end
+
+-- Check if we're still in the initial calculation period
+function addon:IsCombatRatingCalculating()
+    if not bgStartTime then return false end
+    local matchMinutes = (GetTime() - bgStartTime) / 60
+    return matchMinutes < COMBAT_RATING_MIN_MINUTES
+end
+
+-- Backwards compatibility alias
+function addon:IsEnemyRatingCalculating()
+    return self:IsCombatRatingCalculating()
 end

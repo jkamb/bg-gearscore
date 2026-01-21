@@ -2,7 +2,7 @@
 ## Title: BG-GearScore
 ## Notes: Calculates and displays GearScore for battleground players with match history tracking
 ## Author: BG-GearScore Team
-## Version: 1.0.0
+## Version: @project-version@
 ## SavedVariables: BGGearScoreDB
 ## OptionalDeps: TacoTip
 

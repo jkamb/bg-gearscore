@@ -8,7 +8,7 @@ local FRAME_WIDTH = 220
 local FRAME_HEIGHT = 420
 local ROW_HEIGHT = 18
 local MAX_VISIBLE_ROWS = 15
-local HEADER_HEIGHT = 95
+local HEADER_HEIGHT = 109  -- Increased to fit enemy rating line
 
 -- Main scoreboard frame
 local scoreboardFrame = nil
@@ -82,10 +82,17 @@ function addon:CreateScoreboardFrame()
     lvlStatsHeader:SetJustifyH("LEFT")
     frame.lvlStatsHeader = lvlStatsHeader
 
+    -- Team stats header - line 3 (Enemy Combat Rating)
+    local enemyRatingHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    enemyRatingHeader:SetPoint("TOPLEFT", 12, -60)
+    enemyRatingHeader:SetWidth(FRAME_WIDTH - 24)
+    enemyRatingHeader:SetJustifyH("LEFT")
+    frame.enemyRatingHeader = enemyRatingHeader
+
     -- Win prediction display
     local predictionFrame = CreateFrame("Frame", nil, frame)
     predictionFrame:SetSize(FRAME_WIDTH - 24, 18)
-    predictionFrame:SetPoint("TOPLEFT", 12, -60)
+    predictionFrame:SetPoint("TOPLEFT", 12, -74)
 
     -- Prediction text
     local predictionText = predictionFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -108,7 +115,7 @@ function addon:CreateScoreboardFrame()
     frame.predictionBar = predictionBar
 
     -- Column headers
-    local headerY = -86
+    local headerY = -100
     local headers = {
         { text = "Player", x = 12, width = 120 },
         { text = "GS", x = 140, width = 50 },
@@ -257,6 +264,33 @@ function addon:UpdateScoreboardUI()
     end
     scoreboardFrame.gsStatsHeader:SetText(gsText)
     scoreboardFrame.lvlStatsHeader:SetText(lvlText)
+
+    -- Update combat rating display (shows both team's performance ratings)
+    local friendlyRating = self:GetFriendlyCombatRating()
+    local enemyRating = self:GetEnemyCombatRating()
+    local isCalculating = self:IsCombatRatingCalculating()
+
+    if isCalculating then
+        scoreboardFrame.enemyRatingHeader:SetText("Combat: Calculating...")
+        scoreboardFrame.enemyRatingHeader:SetTextColor(0.6, 0.6, 0.6)
+    elseif friendlyRating and enemyRating then
+        -- Show both ratings for comparison: "Combat: ~520 vs ~480"
+        local friendlyColor = self:GetGearScoreColorHex(friendlyRating)
+        local enemyColor = self:GetGearScoreColorHex(enemyRating)
+        scoreboardFrame.enemyRatingHeader:SetText(string.format(
+            "Combat: |cFF%s~%d|r vs |cFF%s~%d|r",
+            friendlyColor, friendlyRating,
+            enemyColor, enemyRating
+        ))
+    elseif enemyRating then
+        -- Only enemy rating available (shouldn't happen normally)
+        scoreboardFrame.enemyRatingHeader:SetText(string.format(
+            "Enemy: |cFF%s~%d|r rating",
+            self:GetGearScoreColorHex(enemyRating), enemyRating
+        ))
+    else
+        scoreboardFrame.enemyRatingHeader:SetText("")
+    end
 
     -- Update win prediction display
     local prediction, needsMore, matchesNeeded = self:GetCurrentPrediction()

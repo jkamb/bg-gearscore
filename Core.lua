@@ -48,12 +48,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
--- Debug mode flag
-addon.debug = false
-
--- Debug print function
+-- Debug print function (uses persisted setting from db)
 function addon:Debug(...)
-    if self.debug then
+    if self.db and self.db.settings and self.db.settings.debugMode then
         print("|cFF00FF00[BG-GS Debug]|r", ...)
     end
 end
@@ -130,6 +127,7 @@ local function HandleSlashCommand(msg)
         -- Show/toggle settings
         addon:Print("Settings:")
         addon:Print("  Auto-show in BG: " .. (addon.db and addon.db.settings.autoShowInBG and "ON" or "OFF"))
+        addon:Print("  Debug mode: " .. (addon.db and addon.db.settings.debugMode and "ON" or "OFF"))
         addon:Print("  Max history entries: " .. (addon.db and addon.db.settings.maxHistoryEntries or 100))
         addon:Print("Use /bggs autoshow to toggle auto-show setting")
     elseif cmd == "autoshow" then
@@ -159,9 +157,11 @@ local function HandleSlashCommand(msg)
             addon:Print("TacoTip GearScore: " .. (ttgs or "N/A"))
         end
     elseif cmd == "debug" then
-        -- Toggle debug mode
-        addon.debug = not addon.debug
-        addon:Print("Debug mode: " .. (addon.debug and "ON" or "OFF"))
+        -- Toggle debug mode (persisted)
+        if addon.db and addon.db.settings then
+            addon.db.settings.debugMode = not addon.db.settings.debugMode
+            addon:Print("Debug mode: " .. (addon.db.settings.debugMode and "ON" or "OFF"))
+        end
     elseif cmd == "help" then
         addon:Print("Commands:")
         addon:Print("  /bggs - Toggle scoreboard")

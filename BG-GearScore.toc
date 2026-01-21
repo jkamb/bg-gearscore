@@ -1,0 +1,16 @@
+## Interface: 20505
+## Title: BG-GearScore
+## Notes: Calculates and displays GearScore for battleground players with match history tracking
+## Author: BG-GearScore Team
+## Version: 1.0.0
+## SavedVariables: BGGearScoreDB
+## OptionalDeps: TacoTip
+
+Core.lua
+GearScore.lua
+DataStore.lua
+InspectQueue.lua
+BattlegroundTracker.lua
+UI/ScoreboardFrame.lua
+UI/HistoryFrame.lua
+UI/MinimapButton.lua

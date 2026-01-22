@@ -60,9 +60,27 @@ function addon:Print(...)
     print("|cFF00CCFFBGGearScore:|r", ...)
 end
 
+-- Check for TacoTip dependency
+local function CheckTacoTipDependency()
+    if not addon:HasTacoTip() then
+        addon:Print("|cffff0000ERROR: TacoTip is required but not loaded.|r")
+        addon:Print("|cffff0000BG-GearScore will remain disabled until TacoTip is available.|r")
+        addon:Print("|cffff0000Please install TacoTip and /reload.|r")
+        return false
+    end
+    return true
+end
+
 -- Initialization on ADDON_LOADED
 local function OnAddonLoaded(event, loadedAddon)
     if loadedAddon ~= addonName then return end
+
+    -- Check for TacoTip dependency first
+    if not CheckTacoTipDependency() then
+        -- Don't initialize anything if TacoTip isn't loaded
+        addon:UnregisterEvent("ADDON_LOADED", OnAddonLoaded)
+        return
+    end
 
     -- Initialize data store (will be set up in DataStore.lua)
     if addon.InitializeDataStore then
@@ -90,7 +108,20 @@ local function OnAddonLoaded(event, loadedAddon)
         addon:InitializeMinimapButton()
     end
 
+    if addon.InitializeGuildSync then
+        addon:InitializeGuildSync()
+    end
+
+    if addon.InitializeGroupSync then
+        addon:InitializeGroupSync()
+    end
+
+    if addon.InitializeSyncStatus then
+        addon:InitializeSyncStatus()
+    end
+
     addon:Print("Loaded v" .. addon.version .. " - Type /bggs for commands")
+    addon:Debug("TacoTip detected and ready")
     addon:UnregisterEvent("ADDON_LOADED", OnAddonLoaded)
 end
 
@@ -149,18 +180,40 @@ local function HandleSlashCommand(msg)
             addon:Print("Cache cleared. Your GearScore will be recalculated.")
         end
     elseif cmd == "myscore" then
-        -- Show current player's GearScore calculation
-        local gs, extra = addon:CalculateGearScore("player")
-        addon:Print("Your GearScore: " .. (gs or "N/A"))
-        if TT_GS and TT_GS.GetScore then
-            local ttgs = TT_GS:GetScore("player")
-            addon:Print("TacoTip GearScore: " .. (ttgs or "N/A"))
-        end
+        -- Show current player's GearScore from TacoTip
+        local gs, avgIlvl = TT_GS:GetScore("player")
+        addon:Print("Your GearScore: " .. (gs or "N/A") .. " (avg ilvl: " .. (avgIlvl or "N/A") .. ")")
     elseif cmd == "debug" then
         -- Toggle debug mode (persisted)
         if addon.db and addon.db.settings then
             addon.db.settings.debugMode = not addon.db.settings.debugMode
             addon:Print("Debug mode: " .. (addon.db.settings.debugMode and "ON" or "OFF"))
+        end
+    elseif cmd == "sync" or cmd == "guildsync" then
+        -- Manual guild sync
+        if addon.RequestGuildSync then
+            local started = addon:RequestGuildSync(true)  -- Manual sync
+            if not started then
+                addon:Print("Sync already in progress or not in guild.")
+            end
+        else
+            addon:Print("Guild sync not available.")
+        end
+    elseif cmd == "syncstatus" then
+        -- Show guild sync status
+        if addon.ToggleSyncStatus then
+            addon:ToggleSyncStatus()
+        elseif addon.GetSyncStatusText then
+            addon:Print(addon:GetSyncStatusText())
+        else
+            addon:Print("Guild sync status not available.")
+        end
+    elseif cmd == "groupsync" then
+        -- Manual group sync
+        if addon.TriggerGroupSyncDebug then
+            addon:TriggerGroupSyncDebug()
+        else
+            addon:Print("Group sync not available.")
         end
     elseif cmd == "help" then
         addon:Print("Commands:")
@@ -171,6 +224,9 @@ local function HandleSlashCommand(msg)
         addon:Print("  /bggs autoshow - Toggle auto-show in BG")
         addon:Print("  /bggs minimap - Toggle minimap button")
         addon:Print("  /bggs debug - Toggle debug mode")
+        addon:Print("  /bggs sync - Sync match history with guild")
+        addon:Print("  /bggs syncstatus - Show sync status")
+        addon:Print("  /bggs groupsync - Manually trigger group sync")
     else
         addon:Print("Unknown command. Type /bggs help for usage.")
     end

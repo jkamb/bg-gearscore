@@ -1,23 +1,7 @@
 -- BG-GearScore GearScore Calculation Engine
--- Uses TacoTip if available, otherwise falls back to built-in formula
+-- Requires TacoTip for GearScore calculation
 
 local addonName, addon = ...
-
--- Flag to track if TacoTip is available
-local hasTacoTip = false
-
--- Check for TacoTip on load
-local function CheckForTacoTip()
-    if TT_GS and TT_GS.GetScore then
-        hasTacoTip = true
-        addon:Debug("TacoTip detected, using TT_GS:GetScore()")
-        return true
-    end
-    return false
-end
-
--- Delayed check (TacoTip might load after us)
-C_Timer.After(1, CheckForTacoTip)
 
 -- Inventory slot IDs
 local INVSLOT_HEAD = 1
@@ -59,189 +43,75 @@ local EQUIPMENT_SLOTS = {
     INVSLOT_RANGED,
 }
 
--- Slot modifiers based on item equip location (from TacoTip)
--- Maps INVTYPE_* to slot modifier
-local GS_ItemTypes = {
-    ["INVTYPE_HEAD"] = 1.0000,
-    ["INVTYPE_NECK"] = 0.5625,
-    ["INVTYPE_SHOULDER"] = 0.7500,
-    ["INVTYPE_CHEST"] = 1.0000,
-    ["INVTYPE_ROBE"] = 1.0000,
-    ["INVTYPE_WAIST"] = 0.7500,
-    ["INVTYPE_LEGS"] = 1.0000,
-    ["INVTYPE_FEET"] = 0.7500,
-    ["INVTYPE_WRIST"] = 0.5625,
-    ["INVTYPE_HAND"] = 0.7500,
-    ["INVTYPE_FINGER"] = 0.5625,
-    ["INVTYPE_TRINKET"] = 0.3164,
-    ["INVTYPE_CLOAK"] = 0.5625,
-    ["INVTYPE_WEAPON"] = 1.0000,
-    ["INVTYPE_WEAPONMAINHAND"] = 1.0000,
-    ["INVTYPE_WEAPONOFFHAND"] = 1.0000,
-    ["INVTYPE_HOLDABLE"] = 1.0000,
-    ["INVTYPE_SHIELD"] = 1.0000,
-    ["INVTYPE_2HWEAPON"] = 2.0000,
-    ["INVTYPE_RANGED"] = 0.3164,
-    ["INVTYPE_RANGEDRIGHT"] = 0.3164,
-    ["INVTYPE_THROWN"] = 0.3164,
-    ["INVTYPE_RELIC"] = 0.3164,
-}
-
--- Quality formula constants (from TacoTip)
--- For ItemLevel > 120 (high level items)
-local GS_Formula_A = {
-    [4] = { A = 91.45, B = 0.65 },   -- Epic
-    [3] = { A = 81.375, B = 0.8125 }, -- Rare
-    [2] = { A = 73.0, B = 1.0 },     -- Uncommon
-}
-
--- For ItemLevel <= 120 (lower level items like TBC)
-local GS_Formula_B = {
-    [4] = { A = 26.0, B = 1.2 },    -- Epic
-    [3] = { A = 0.75, B = 1.8 },    -- Rare
-    [2] = { A = 8.0, B = 2.0 },     -- Uncommon
-    [1] = { A = 0.0, B = 2.25 },    -- Common
-    [0] = { A = 0.0, B = 2.5 },     -- Poor
-}
-
--- Calculate GearScore for a single item
--- Formula: floor(((ItemLevel - A) / B) * SlotMOD * 1.8618)
-local function CalculateItemScore(itemLink, slotId)
-    if not itemLink then return 0 end
-
-    local _, _, quality, itemLevel, _, _, _, _, itemEquipLoc = GetItemInfo(itemLink)
-    if not itemLevel or not quality then return 0 end
-
-    -- Skip items with no equip location or quality too low/high
-    if quality < 0 or quality > 4 then
-        -- Treat quality 5+ (legendary, artifact, heirloom) as epic
-        quality = 4
-    end
-
-    -- Get slot modifier from equip location
-    local slotMod = GS_ItemTypes[itemEquipLoc]
-    if not slotMod then
-        -- Fallback based on slot ID
-        if slotId == INVSLOT_HEAD or slotId == INVSLOT_CHEST or slotId == INVSLOT_LEGS then
-            slotMod = 1.0
-        elseif slotId == INVSLOT_SHOULDER or slotId == INVSLOT_WAIST or slotId == INVSLOT_HANDS or slotId == INVSLOT_FEET then
-            slotMod = 0.75
-        elseif slotId == INVSLOT_NECK or slotId == INVSLOT_WRIST or slotId == INVSLOT_FINGER1 or slotId == INVSLOT_FINGER2 or slotId == INVSLOT_BACK then
-            slotMod = 0.5625
-        elseif slotId == INVSLOT_TRINKET1 or slotId == INVSLOT_TRINKET2 or slotId == INVSLOT_RANGED then
-            slotMod = 0.3164
-        elseif slotId == INVSLOT_MAINHAND or slotId == INVSLOT_OFFHAND then
-            slotMod = 1.0
-        else
-            slotMod = 1.0
-        end
-    end
-
-    -- Select formula based on item level
-    local formula
-    if itemLevel > 120 then
-        formula = GS_Formula_A[quality]
-    else
-        formula = GS_Formula_B[quality]
-    end
-
-    -- If no formula for this quality, skip
-    if not formula then return 0 end
-
-    local A, B = formula.A, formula.B
-
-    -- Calculate score using TacoTip formula
-    local score = math.floor(((itemLevel - A) / B) * slotMod * 1.8618)
-
-    return math.max(0, score)
+-- Check if TacoTip is available
+function addon:HasTacoTip()
+    return TT_GS and TT_GS.GetScore and TT_GS.GetItemScore
 end
 
--- Calculate total GearScore for a unit
-function addon:CalculateGearScore(unit)
-    if not unit or not UnitExists(unit) then
-        return nil, "Unit does not exist"
-    end
-
-    -- Try TacoTip first if available
-    if hasTacoTip or CheckForTacoTip() then
-        local gs, avgIlvl = TT_GS:GetScore(unit)
-        if gs and gs > 0 then
-            return gs, avgIlvl or 0
-        end
-    end
-
-    -- Fallback to built-in calculation
-    local totalScore = 0
-    local itemCount = 0
-    local hasTwoHand = false
-
-    -- Check main hand for 2H weapon first
-    local mainHandLink = GetInventoryItemLink(unit, INVSLOT_MAINHAND)
-    if mainHandLink then
-        local _, _, _, _, _, _, _, _, itemEquipLoc = GetItemInfo(mainHandLink)
-        if itemEquipLoc == "INVTYPE_2HWEAPON" then
-            hasTwoHand = true
-        end
-    end
-
-    -- Calculate score for each slot
-    for _, slotId in ipairs(EQUIPMENT_SLOTS) do
-        local itemLink = GetInventoryItemLink(unit, slotId)
-
-        -- Skip offhand if using 2H weapon (already counted in main hand modifier)
-        if slotId == INVSLOT_OFFHAND and hasTwoHand then
-            -- Don't count offhand for 2H users
-        elseif itemLink then
-            local score = CalculateItemScore(itemLink, slotId)
-            totalScore = totalScore + score
-            itemCount = itemCount + 1
-        end
-    end
-
-    return totalScore, itemCount
-end
-
--- Calculate GearScore from cached item links
-function addon:CalculateGearScoreFromItems(items)
+-- Calculate GearScore from cached item links using TacoTip
+-- playerClass is required for class-specific modifiers (e.g., Hunter)
+function addon:CalculateGearScoreFromItems(items, playerClass)
     if not items then return 0, 0 end
 
     local totalScore = 0
     local itemCount = 0
-    local hasTwoHand = false
+    local titanGrip = 1  -- Multiplier for 2H weapons when dual-wielding
 
-    -- Check main hand for 2H
-    if items[INVSLOT_MAINHAND] then
-        local _, _, _, _, _, _, _, _, itemEquipLoc = GetItemInfo(items[INVSLOT_MAINHAND])
-        if itemEquipLoc == "INVTYPE_2HWEAPON" then
-            hasTwoHand = true
+    -- Check for Titan's Grip (dual 2H weapons)
+    if items[INVSLOT_MAINHAND] and items[INVSLOT_OFFHAND] then
+        local _, _, _, _, _, _, _, _, mainEquipLoc = GetItemInfo(items[INVSLOT_MAINHAND])
+        local _, _, _, _, _, _, _, _, offEquipLoc = GetItemInfo(items[INVSLOT_OFFHAND])
+        if mainEquipLoc == "INVTYPE_2HWEAPON" or offEquipLoc == "INVTYPE_2HWEAPON" then
+            titanGrip = 0.5
         end
     end
 
     for slotId, itemLink in pairs(items) do
-        if slotId == INVSLOT_OFFHAND and hasTwoHand then
-            -- Skip offhand for 2H users
-        else
-            local score = 0
-            -- Try TacoTip's item score function if available
-            if hasTacoTip and TT_GS.GetItemScore then
-                score = TT_GS:GetItemScore(itemLink) or 0
-            else
-                score = CalculateItemScore(itemLink, slotId)
+        -- TT_GS:GetItemScore returns: GearScore, ItemLevel, R, G, B, ItemEquipLoc
+        local score = TT_GS:GetItemScore(itemLink) or 0
+
+        -- Apply class-specific modifiers (matching TacoTip's GetScore behavior)
+        if playerClass == "HUNTER" then
+            if slotId == INVSLOT_MAINHAND or slotId == INVSLOT_OFFHAND then
+                score = math.floor(score * 0.3164)
+            elseif slotId == INVSLOT_RANGED then
+                score = math.floor(score * 5.3224)
             end
-            totalScore = totalScore + score
-            itemCount = itemCount + 1
         end
+
+        -- Apply Titan's Grip penalty to main hand only (matching TacoTip)
+        -- Offhand Titan's Grip is handled in TacoTip's separate offhand processing,
+        -- but since we process all slots uniformly, we apply it here too
+        if titanGrip ~= 1 and (slotId == INVSLOT_MAINHAND or slotId == INVSLOT_OFFHAND) then
+            score = math.floor(score * titanGrip)
+        end
+
+        totalScore = totalScore + score
+        itemCount = itemCount + 1
+
+        addon:Debug("  Slot", slotId, "score:", score)
     end
+
+    addon:Debug("Total GearScore:", totalScore, "from", itemCount, "items, class:", playerClass)
 
     return totalScore, itemCount
 end
 
--- Get GearScore color based on score value (TBC scale)
+-- Get GearScore color based on score value (uses TacoTip's color function if available)
 function addon:GetGearScoreColor(score)
     if not score or score <= 0 then
         return 0.5, 0.5, 0.5  -- Grey for unknown
-    elseif score < 200 then
-        return 0.6, 0.6, 0.6  -- Grey for very low
+    end
+
+    -- Use TacoTip's color function if available
+    if TT_GS and TT_GS.GetQuality then
+        local r, g, b = TT_GS:GetQuality(score)
+        if r then return r, g, b end
+    end
+
+    -- Fallback colors
+    if score < 200 then
+        return 0.6, 0.6, 0.6  -- Grey
     elseif score < 400 then
         return 0.0, 1.0, 0.0  -- Green
     elseif score < 600 then
@@ -251,7 +121,7 @@ function addon:GetGearScoreColor(score)
     elseif score < 1000 then
         return 1.0, 0.5, 0.0  -- Orange
     else
-        return 1.0, 0.0, 0.0  -- Red for exceptional
+        return 1.0, 0.0, 0.0  -- Red
     end
 end
 
@@ -261,7 +131,7 @@ function addon:GetGearScoreColorHex(score)
     return string.format("%02x%02x%02x", r*255, g*255, b*255)
 end
 
--- Get GearScore rating text (TBC scale)
+-- Get GearScore rating text
 function addon:GetGearScoreRating(score)
     if not score or score <= 0 then
         return "Unknown"
@@ -284,3 +154,4 @@ end
 addon.EQUIPMENT_SLOTS = EQUIPMENT_SLOTS
 addon.INVSLOT_MAINHAND = INVSLOT_MAINHAND
 addon.INVSLOT_OFFHAND = INVSLOT_OFFHAND
+addon.INVSLOT_RANGED = INVSLOT_RANGED

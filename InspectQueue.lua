@@ -4,9 +4,8 @@
 local addonName, addon = ...
 
 -- Inspection configuration
-local INSPECT_THROTTLE = 1.5  -- Seconds between inspections (server limit)
-local INSPECT_RANGE = 28      -- Yard range for inspection
-local INSPECT_TIMEOUT = 5     -- Timeout for pending inspections
+local INSPECT_THROTTLE = 0.5  -- Seconds between inspections (faster since we use TacoTip's cache)
+local INSPECT_TIMEOUT = 3     -- Timeout for pending inspections (reduced since we're faster)
 
 -- Queue state
 local inspectQueue = {}       -- Players waiting to be inspected
@@ -60,6 +59,39 @@ function addon:AddToSessionCache(playerName, data)
     }
 end
 
+-- Add player to session cache from group sync (no inspection)
+function addon:AddToSessionCacheFromSync(playerName, gearScore, timestamp, source)
+    -- Only accept if not already in session cache
+    if sessionCache[playerName] then
+        return false
+    end
+
+    -- Validate GearScore (minimum sanity check)
+    local MIN_VALID_GEARSCORE = 100
+    if gearScore < MIN_VALID_GEARSCORE then
+        addon:Debug("Rejecting invalid GS from sync:", playerName, gearScore)
+        return false
+    end
+
+    -- Validate timestamp (within 4 hours)
+    local MAX_CACHE_AGE = 4 * 60 * 60  -- 4 hours in seconds
+    if (time() - timestamp) > MAX_CACHE_AGE then
+        addon:Debug("Rejecting stale data from sync:", playerName, "age:", time() - timestamp)
+        return false
+    end
+
+    -- Add to session cache
+    sessionCache[playerName] = {
+        gearScore = gearScore,
+        timestamp = GetTime(),
+        fromGroupSync = true,
+        syncSource = source,
+    }
+
+    addon:Debug("Added from group sync:", playerName, "GS:", gearScore, "from:", source)
+    return true
+end
+
 -- Queue a player for inspection
 function addon:QueueInspect(playerName, unit, priority)
     if not playerName or not unit then return false end
@@ -77,15 +109,24 @@ function addon:QueueInspect(playerName, unit, priority)
     -- Check if already in persistent cache (with valid data)
     local cached = self:GetCachedPlayer(playerName)
     if cached and cached.gearScore and cached.gearScore > 0 then
-        -- Add to session cache from persistent cache
-        sessionCache[playerName] = {
-            gearScore = cached.gearScore,
-            class = cached.class,
-            itemCount = cached.itemCount,
-            timestamp = GetTime(),
-            fromCache = true,
-        }
-        return false
+        -- Sanity check: reject suspiciously low cached scores
+        -- A player with items should have at least ~150 GS (even in greens)
+        local MIN_VALID_GEARSCORE = 100
+        if cached.gearScore >= MIN_VALID_GEARSCORE then
+            -- Add to session cache from persistent cache
+            sessionCache[playerName] = {
+                gearScore = cached.gearScore,
+                class = cached.class,
+                itemCount = cached.itemCount,
+                timestamp = GetTime(),
+                fromCache = true,
+            }
+            return false
+        else
+            -- Cached score is too low, likely bad data - clear it and re-inspect
+            addon:Debug("Clearing suspicious cached GS for:", playerName, "GS:", cached.gearScore)
+            self:ClearCachedPlayer(playerName)
+        end
     end
 
     -- Check if already queued
@@ -122,6 +163,20 @@ function addon:QueueInspect(playerName, unit, priority)
     self:ProcessInspectQueue()
 
     return true
+end
+
+-- Re-queue a player at the back of the queue (for retries)
+-- This allows other players to be processed while item data loads
+function addon:RequeueInspect(playerName, unit, retryCount)
+    local entry = {
+        name = playerName,
+        unit = unit,
+        priority = -1,  -- Low priority so it goes to the back
+        retryCount = retryCount,
+        addedAt = GetTime(),
+    }
+    table.insert(inspectQueue, entry)
+    addon:Debug("Re-queued", playerName, "at position", #inspectQueue)
 end
 
 -- Process the inspection queue
@@ -168,7 +223,34 @@ function addon:ProcessInspectQueue()
         return
     end
 
-    -- Check if we can inspect this unit
+    -- Try TacoTip's cached score first (instant, no range requirement)
+    local ttScore = TT_GS:GetScore(unit)
+    if ttScore and ttScore > 0 then
+        -- TacoTip has cached data! Use it immediately
+        local _, class = UnitClass(unit)
+        local data = {
+            gearScore = ttScore,
+            class = class,
+            itemCount = 16,  -- Estimated full set
+        }
+        addon:AddToSessionCache(entry.name, data)
+        addon:CachePlayer(entry.name, data)
+
+        if addon.OnPlayerInspected then
+            addon:OnPlayerInspected(entry.name, data)
+        end
+
+        addon:Debug("Fast scan via TacoTip cache:", entry.name, "GS:", ttScore)
+
+        -- Continue to next player immediately
+        C_Timer.After(0.05, function()
+            addon:ProcessInspectQueue()
+        end)
+        return
+    end
+
+    -- TacoTip doesn't have cached data, do full inspection
+    -- Check if we can inspect this unit (range + inspectable)
     if not CanInspect(unit) then
         -- Can't inspect (maybe left BG), mark as failed
         failedInspects[entry.name] = true
@@ -176,18 +258,19 @@ function addon:ProcessInspectQueue()
         return
     end
 
-    -- Check if in range
+    -- Check if in range (only needed for NotifyInspect)
     if not CheckInteractDistance(unit, 1) then
-        -- Out of range, don't mark as failed - will retry on next scoreboard update
+        -- Out of range, re-queue at back so we try again when they're in range
+        self:RequeueInspect(entry.name, unit, entry.retryCount or 0)
         self:ProcessInspectQueue()
         return
     end
 
-    -- Start inspection
     pendingInspect = {
         name = entry.name,
         unit = unit,
         startTime = GetTime(),
+        retryCount = entry.retryCount or 0,
     }
 
     lastInspectTime = GetTime()
@@ -211,6 +294,7 @@ function addon:OnInspectReady()
 
     local unit = pendingInspect.unit
     local playerName = pendingInspect.name
+    local retryCount = pendingInspect.retryCount or 0
 
     -- Verify it's still the expected unit
     local shortName = playerName:match("^([^-]+)") or playerName
@@ -225,29 +309,83 @@ function addon:OnInspectReady()
     -- Read gear data
     local items = {}
     local hasAnyItem = false
+    local hasIncompleteItem = false
 
+    addon:Debug("Reading gear for:", playerName)
     for _, slotId in ipairs(addon.EQUIPMENT_SLOTS) do
         local itemLink = GetInventoryItemLink(unit, slotId)
+        -- Also check if there's an item in the slot even if we can't get the link yet
+        local hasItem = GetInventoryItemID(unit, slotId)
+
         if itemLink then
             items[slotId] = itemLink
             hasAnyItem = true
+            -- Check if item info is loaded (GetItemInfo returns nil for uncached items)
+            local itemName, _, quality, itemLevel = GetItemInfo(itemLink)
+            if not itemLevel then
+                hasIncompleteItem = true
+                addon:Debug("  Slot", slotId, "- item not cached:", itemLink)
+            else
+                addon:Debug("  Slot", slotId, "-", itemName, "ilvl:", itemLevel)
+            end
+        elseif hasItem then
+            -- Slot has an item but link isn't available yet
+            hasIncompleteItem = true
+            addon:Debug("  Slot", slotId, "- has item ID", hasItem, "but no link yet")
         end
+    end
+    addon:Debug("Found", hasAnyItem and "items" or "no items", "incomplete:", hasIncompleteItem)
+
+    -- If no items found or item info not loaded yet, re-queue to back of line
+    -- This gives time for item cache to populate while we process other players
+    local MAX_RETRIES = 5
+    if (not hasAnyItem or hasIncompleteItem) and retryCount < MAX_RETRIES then
+        addon:Debug("Incomplete item data for:", playerName, "re-queuing (attempt", retryCount + 1, "of", MAX_RETRIES, ")")
+        ClearInspectPlayer()
+        pendingInspect = nil
+        -- Re-queue at back with incremented retry count
+        self:RequeueInspect(playerName, unit, retryCount + 1)
+        self:ProcessInspectQueue()
+        return
     end
 
     if not hasAnyItem then
-        addon:Debug("No items found for:", playerName)
+        addon:Debug("No items found for:", playerName, "after", MAX_RETRIES, "attempts")
         pendingInspect = nil
         self:ProcessInspectQueue()
         return
     end
 
-    -- Calculate GearScore (try unit-based first for TacoTip, fallback to items)
-    local gearScore, itemCount = self:CalculateGearScore(unit)
-    if not gearScore or gearScore == 0 then
-        -- Fallback to item-based calculation
-        gearScore, itemCount = self:CalculateGearScoreFromItems(items)
-    end
+    -- Get class for class-specific modifiers (e.g., Hunter weapon scaling)
     local _, class = UnitClass(unit)
+
+    -- Calculate GearScore from the collected item links
+    -- We use item-based calculation because we have reliable item data from the inspection
+    -- TT_GS:GetScore(unit) can be unreliable during inspections as it may not see all gear
+    local gearScore, itemCount = self:CalculateGearScoreFromItems(items, class)
+
+    -- Sanity check: if we have many items but a very low score, data might be incomplete
+    -- A typical TBC player with 10+ items should have at least 200+ GS
+    -- Score of 27 with 10+ items means item info wasn't loaded properly
+    local itemsWithLinks = 0
+    for _ in pairs(items) do
+        itemsWithLinks = itemsWithLinks + 1
+    end
+
+    local MIN_EXPECTED_GS_PER_ITEM = 15  -- Very conservative: even greens give more than this
+    local expectedMinScore = itemsWithLinks * MIN_EXPECTED_GS_PER_ITEM
+
+    if gearScore > 0 and gearScore < expectedMinScore and retryCount < MAX_RETRIES then
+        addon:Debug("GearScore suspiciously low for:", playerName,
+            "GS:", gearScore, "items:", itemsWithLinks, "expected min:", expectedMinScore,
+            "- re-queuing (attempt", retryCount + 1, "of", MAX_RETRIES, ")")
+        ClearInspectPlayer()
+        pendingInspect = nil
+        -- Re-queue at back with incremented retry count
+        self:RequeueInspect(playerName, unit, retryCount + 1)
+        self:ProcessInspectQueue()
+        return
+    end
 
     -- Store in session cache
     local data = {
@@ -261,7 +399,7 @@ function addon:OnInspectReady()
     -- Store in persistent cache
     self:CachePlayer(playerName, data)
 
-    addon:Debug("Inspection complete:", playerName, "GS:", gearScore)
+    addon:Debug("Inspection complete:", playerName, "GS:", gearScore, "items:", itemsWithLinks)
 
     -- Clear inspection state
     ClearInspectPlayer()
@@ -371,9 +509,74 @@ function addon:GetPlayerGearScore(playerName)
     return nil, nil
 end
 
+-- Fast scan using TacoTip's cache (no inspection needed)
+function addon:FastScanTacoTipCache()
+    local scanned = 0
+
+    -- Scan all raid/party members
+    if IsInRaid() then
+        for i = 1, 40 do
+            local unit = "raid" .. i
+            if UnitExists(unit) and not UnitIsEnemy("player", unit) then
+                local name = UnitName(unit)
+                if name and not sessionCache[name] then
+                    local ttScore = TT_GS:GetScore(unit)
+                    if ttScore and ttScore > 0 then
+                        local _, class = UnitClass(unit)
+                        local data = {
+                            gearScore = ttScore,
+                            class = class,
+                            itemCount = 16,
+                        }
+                        self:AddToSessionCache(name, data)
+                        self:CachePlayer(name, data)
+
+                        if self.OnPlayerInspected then
+                            self:OnPlayerInspected(name, data)
+                        end
+
+                        scanned = scanned + 1
+                    end
+                end
+            end
+        end
+    else
+        for i = 1, 4 do
+            local unit = "party" .. i
+            if UnitExists(unit) then
+                local name = UnitName(unit)
+                if name and not sessionCache[name] then
+                    local ttScore = TT_GS:GetScore(unit)
+                    if ttScore and ttScore > 0 then
+                        local _, class = UnitClass(unit)
+                        local data = {
+                            gearScore = ttScore,
+                            class = class,
+                            itemCount = 16,
+                        }
+                        self:AddToSessionCache(name, data)
+                        self:CachePlayer(name, data)
+
+                        if self.OnPlayerInspected then
+                            self:OnPlayerInspected(name, data)
+                        end
+
+                        scanned = scanned + 1
+                    end
+                end
+            end
+        end
+    end
+
+    return scanned
+end
+
 -- Force scan of all nearby friendly players
 function addon:ForceScan()
-    -- Clear session cache to force re-inspection
+    -- First try fast scan via TacoTip cache
+    local fastScanned = self:FastScanTacoTipCache()
+
+    -- Clear session cache to force re-inspection for any remaining
     sessionCache = {}
     inspectQueue = {}
 
@@ -400,5 +603,5 @@ function addon:ForceScan()
         end
     end
 
-    addon:Print("Queued", #inspectQueue, "players for inspection")
+    addon:Print("Fast scanned", fastScanned, "from cache, queued", #inspectQueue, "for inspection")
 end

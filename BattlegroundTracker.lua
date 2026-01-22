@@ -6,6 +6,7 @@ local addonName, addon = ...
 -- Tracking state
 local currentBG = nil
 local bgStartTime = nil
+local bgInstanceID = nil  -- Unique instance ID from GetBattlefieldStatus (e.g., "5" for "WSG 5")
 local bgWinner = nil  -- Captured when BG ends
 local lastScoreboardUpdate = 0
 local players = {
@@ -82,8 +83,13 @@ end
 function addon:OnBattlefieldStatusUpdate()
     -- Check all BG slots for active BG
     for i = 1, GetMaxBattlefieldID() do
-        local status, mapName = GetBattlefieldStatus(i)
+        local status, mapName, instanceID = GetBattlefieldStatus(i)
         if status == "active" then
+            -- Capture the instance ID (unique per BG instance, e.g., 5 for "WSG 5")
+            if instanceID and instanceID > 0 then
+                bgInstanceID = instanceID
+                addon:Debug("Captured BG instance ID:", instanceID)
+            end
             if not currentBG then
                 self:OnEnterBattleground()
             end
@@ -94,10 +100,29 @@ end
 
 -- Called when entering a battleground
 function addon:OnEnterBattleground()
-    currentBG = self:GetBattlegroundName() or "Unknown Battleground"
+    currentBG = self:GetBattlegroundName()
     bgStartTime = GetTime()
     bgWinner = nil  -- Reset winner
     playerFaction = self:GetPlayerFaction()
+
+    -- Try to get instance ID and map name from battlefield status
+    bgInstanceID = nil
+    for i = 1, GetMaxBattlefieldID() do
+        local status, mapName, instanceID = GetBattlefieldStatus(i)
+        if status == "active" then
+            if instanceID and instanceID > 0 then
+                bgInstanceID = instanceID
+            end
+            -- Use mapName from GetBattlefieldStatus as fallback if GetInstanceInfo failed
+            if (not currentBG or currentBG == "Unknown Battleground") and mapName and mapName ~= "" then
+                currentBG = mapName
+            end
+            break
+        end
+    end
+
+    -- Final fallback if we still don't have a name
+    currentBG = currentBG or "Unknown Battleground"
 
     -- Clear player lists
     players[0] = {}
@@ -113,8 +138,22 @@ function addon:OnEnterBattleground()
     -- Clear session cache
     self:ClearSessionCache()
 
-    addon:Debug("Entered BG:", currentBG)
+    addon:Debug("Entered BG:", currentBG, "Instance:", bgInstanceID or "unknown")
     addon:Print("Entered " .. currentBG .. " - Tracking friendly team GearScore")
+
+    -- Retry getting BG name if we still have "Unknown Battleground"
+    -- This handles cases where instance info isn't available immediately
+    if currentBG == "Unknown Battleground" then
+        C_Timer.After(2, function()
+            if addon:IsInBattleground() and currentBG == "Unknown Battleground" then
+                local newName = addon:GetBattlegroundName()
+                if newName and newName ~= "Unknown Battleground" then
+                    currentBG = newName
+                    addon:Debug("Updated BG name to:", currentBG)
+                end
+            end
+        end)
+    end
 
     -- Auto-show scoreboard if enabled
     if self:GetSetting("autoShowInBG") and self.ShowScoreboard then
@@ -127,6 +166,25 @@ function addon:OnEnterBattleground()
 
     -- Start periodic updates
     self:StartScoreboardUpdates()
+
+    -- Do a fast scan using TacoTip's cache
+    C_Timer.After(1, function()
+        if addon:IsInBattleground() then
+            local scanned = addon:FastScanTacoTipCache()
+            if scanned > 0 then
+                addon:Debug("Fast scanned", scanned, "players from TacoTip cache")
+            end
+        end
+    end)
+
+    -- Trigger group sync if in group
+    if addon.InitiateGroupSync then
+        C_Timer.After(2, function()
+            if addon:IsInBattleground() and addon:IsInGroup() then
+                addon:InitiateGroupSync()
+            end
+        end)
+    end
 
     -- Request initial scoreboard
     RequestBattlefieldScoreData()
@@ -147,6 +205,7 @@ function addon:OnLeaveBattleground()
     -- Save match to history (only team stats, not personal stats)
     local matchData = {
         mapName = currentBG,
+        instanceID = bgInstanceID,  -- Unique BG instance ID for sync deduplication
         result = result,
         duration = GetTime() - (bgStartTime or GetTime()),
         teams = self:GetTeamStats(),
@@ -162,6 +221,7 @@ function addon:OnLeaveBattleground()
     -- Clear state
     currentBG = nil
     bgStartTime = nil
+    bgInstanceID = nil
     players[0] = {}
     players[1] = {}
 
@@ -180,6 +240,8 @@ function addon:StartScoreboardUpdates()
     updateTimer = C_Timer.NewTicker(5, function()
         if addon:IsInBattleground() then
             RequestBattlefieldScoreData()
+            -- Also do periodic fast scans to catch new TacoTip cache entries
+            addon:FastScanTacoTipCache()
         else
             addon:StopScoreboardUpdates()
         end
@@ -258,15 +320,47 @@ function addon:OnScoreboardUpdate()
                 playerData.gearScore = self:GetPlayerGearScore(shortName)
             end
 
+            -- Special handling for player's own GearScore (can't inspect self)
+            local myName = UnitName("player")
+            if (name == myName or shortName == myName) and not playerData.gearScore then
+                local unit = "player"
+                if unit then
+                    local items = {}
+                    for _, slotId in ipairs(self.EQUIPMENT_SLOTS) do
+                        local itemLink = GetInventoryItemLink(unit, slotId)
+                        if itemLink then
+                            items[slotId] = itemLink
+                        end
+                    end
+                    local _, class = UnitClass(unit)
+                    local calculatedGS, itemCount = self:CalculateGearScoreFromItems(items, class)
+                    if calculatedGS and calculatedGS > 0 then
+                        playerData.gearScore = calculatedGS
+                        -- Update cache for future use
+                        self:CachePlayer(name, {
+                            gearScore = calculatedGS,
+                            class = class,
+                            itemCount = itemCount
+                        })
+                        -- Update session cache too
+                        self:AddToSessionCache(name, {
+                            gearScore = calculatedGS,
+                            class = class,
+                            itemCount = itemCount
+                        })
+                    end
+                end
+            end
+
             -- Add to appropriate faction list
             if detectedFaction == 0 or detectedFaction == 1 then
                 table.insert(players[detectedFaction], playerData)
             end
 
-            -- Queue friendly players for inspection (only if in range)
+            -- Queue friendly players for inspection (TacoTip cache works at any range)
             if detectedFaction == playerFaction and not playerData.gearScore then
                 local unit = self:FindUnitByName(name) or self:FindUnitByName(shortName)
-                if unit and CanInspect(unit) and CheckInteractDistance(unit, 1) then
+                if unit then
                     self:QueueInspect(name, unit, 3)
                 end
             end

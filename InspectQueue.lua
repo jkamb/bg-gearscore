@@ -181,8 +181,7 @@ end
 function addon:ProcessInspectQueue()
     -- Check if we're already waiting for an inspection
     if pendingInspect then
-        -- Check for timeout
-        if GetTime() - pendingInspect.startTime > INSPECT_TIMEOUT then
+        if HasInspectTimedOut(pendingInspect) then
             addon:Debug("Inspection timed out for:", pendingInspect.name)
             pendingInspect = nil
         else
@@ -196,15 +195,8 @@ function addon:ProcessInspectQueue()
     end
 
     -- Check throttle
-    local timeSinceLastInspect = GetTime() - lastInspectTime
-    if timeSinceLastInspect < INSPECT_THROTTLE then
-        -- Schedule retry
-        if not inspectTimer then
-            inspectTimer = C_Timer.After(INSPECT_THROTTLE - timeSinceLastInspect + 0.1, function()
-                inspectTimer = nil
-                addon:ProcessInspectQueue()
-            end)
-        end
+    if not CanInspectNow() then
+        ScheduleInspectRetry(self)
         return
     end
 
@@ -331,6 +323,27 @@ local function IsGearScoreReasonable(gearScore, itemCount)
     local MIN_EXPECTED_GS_PER_ITEM = 15  -- Very conservative
     local expectedMinScore = itemCount * MIN_EXPECTED_GS_PER_ITEM
     return gearScore == 0 or gearScore >= expectedMinScore
+end
+
+-- Helper: Check if pending inspection has timed out
+local function HasInspectTimedOut(pending)
+    return pending and (GetTime() - pending.startTime > INSPECT_TIMEOUT)
+end
+
+-- Helper: Check if enough time has passed since last inspect (throttle check)
+local function CanInspectNow()
+    return (GetTime() - lastInspectTime) >= INSPECT_THROTTLE
+end
+
+-- Helper: Schedule inspection retry after throttle period
+local function ScheduleInspectRetry(addon)
+    if inspectTimer then return end  -- Already scheduled
+
+    local delay = INSPECT_THROTTLE - (GetTime() - lastInspectTime) + 0.1
+    inspectTimer = C_Timer.After(delay, function()
+        inspectTimer = nil
+        addon:ProcessInspectQueue()
+    end)
 end
 
 -- Handle INSPECT_READY event

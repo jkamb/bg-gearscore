@@ -3,6 +3,17 @@
 
 local addonName, addon = ...
 
+-- Constants
+local FACTION_HORDE = 0
+local FACTION_ALLIANCE = 1
+local WINNER_DRAW = 255
+local MIN_PLAYERS_FOR_PREDICTION = 3  -- Minimum known players needed for win prediction
+
+-- Helper: Get enemy faction
+local function GetEnemyFaction(faction)
+    return faction == FACTION_HORDE and FACTION_ALLIANCE or FACTION_HORDE
+end
+
 -- Tracking state
 local currentBG = nil
 local bgStartTime = nil
@@ -10,8 +21,8 @@ local bgInstanceID = nil  -- Unique instance ID from GetBattlefieldStatus (e.g.,
 local bgWinner = nil  -- Captured when BG ends
 local lastScoreboardUpdate = 0
 local players = {
-    [0] = {},  -- Horde
-    [1] = {},  -- Alliance
+    [FACTION_HORDE] = {},
+    [FACTION_ALLIANCE] = {},
 }
 local playerFaction = nil
 local updateTimer = nil
@@ -353,7 +364,7 @@ function addon:OnScoreboardUpdate()
             end
 
             -- Add to appropriate faction list
-            if detectedFaction == 0 or detectedFaction == 1 then
+            if detectedFaction == FACTION_HORDE or detectedFaction == FACTION_ALLIANCE then
                 table.insert(players[detectedFaction], playerData)
             end
 
@@ -395,12 +406,12 @@ function addon:UpdateWinPrediction()
     if not currentBG then return end
 
     local friendlyStats = self:GetFriendlyTeamStats()
-    local enemyFaction = playerFaction == 0 and 1 or 0
+    local enemyFaction = GetEnemyFaction(playerFaction)
     local allStats = self:GetTeamStats()
     local enemyStats = allStats[enemyFaction]
 
     -- Need at least some GS data to make a prediction
-    if not friendlyStats or friendlyStats.knownCount < 3 then
+    if not friendlyStats or friendlyStats.knownCount < MIN_PLAYERS_FOR_PREDICTION then
         return
     end
 
@@ -441,7 +452,7 @@ end
 
 -- Get enemy team players (only what's visible on scoreboard, no GS data)
 function addon:GetEnemyPlayers()
-    local enemyFaction = playerFaction == 0 and 1 or 0
+    local enemyFaction = GetEnemyFaction(playerFaction)
     return players[enemyFaction] or {}
 end
 
@@ -515,7 +526,7 @@ function addon:DetermineMatchResult()
     local winner = bgWinner
 
     -- 255 = draw in battleground
-    if winner == 255 then
+    if winner == WINNER_DRAW then
         return "draw"
     elseif winner ~= nil then
         if winner == playerFaction then
@@ -635,7 +646,7 @@ end
 
 -- Calculate enemy combat rating (convenience wrapper)
 function addon:CalculateEnemyCombatRating()
-    local enemyFaction = playerFaction == 0 and 1 or 0
+    local enemyFaction = GetEnemyFaction(playerFaction)
     local rating, matchMinutes = self:CalculateCombatRating(enemyFaction)
 
     if rating then

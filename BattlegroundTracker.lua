@@ -452,7 +452,7 @@ function addon:GetTeamStats()
         [1] = { avgGearScore = 0, medianGearScore = 0, avgLevel = 0, medianLevel = 0, knownCount = 0, totalCount = 0, totalDamage = 0, totalHealing = 0 },
     }
 
-    for faction = 0, 1 do
+    self:ForEachFaction(function(faction)
         local gearScores = {}
         local levels = {}
         local teamPlayers = players[faction] or {}
@@ -472,42 +472,12 @@ function addon:GetTeamStats()
             end
         end
 
-        -- Calculate average and median gear score
-        if #gearScores > 0 then
-            local sum = 0
-            for _, gs in ipairs(gearScores) do
-                sum = sum + gs
-            end
-            stats[faction].avgGearScore = math.floor(sum / #gearScores)
-
-            -- Median
-            table.sort(gearScores)
-            local mid = math.floor(#gearScores / 2)
-            if #gearScores % 2 == 0 then
-                stats[faction].medianGearScore = math.floor((gearScores[mid] + gearScores[mid + 1]) / 2)
-            else
-                stats[faction].medianGearScore = gearScores[mid + 1]
-            end
-        end
-
-        -- Calculate average and median level
-        if #levels > 0 then
-            local sum = 0
-            for _, lvl in ipairs(levels) do
-                sum = sum + lvl
-            end
-            stats[faction].avgLevel = math.floor(sum / #levels * 10) / 10  -- One decimal place
-
-            -- Median
-            table.sort(levels)
-            local mid = math.floor(#levels / 2)
-            if #levels % 2 == 0 then
-                stats[faction].medianLevel = math.floor((levels[mid] + levels[mid + 1]) / 2)
-            else
-                stats[faction].medianLevel = levels[mid + 1]
-            end
-        end
-    end
+        -- Calculate statistics using utility functions
+        stats[faction].avgGearScore = self:CalculateAverage(gearScores)
+        stats[faction].medianGearScore = self:CalculateMedian(gearScores)
+        stats[faction].avgLevel = self:CalculateAverage(levels, 1)  -- One decimal place
+        stats[faction].medianLevel = self:CalculateMedian(levels)
+    end)
 
     return stats
 end

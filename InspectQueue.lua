@@ -67,8 +67,7 @@ function addon:AddToSessionCacheFromSync(playerName, gearScore, timestamp, sourc
     end
 
     -- Validate GearScore (minimum sanity check)
-    local MIN_VALID_GEARSCORE = 100
-    if gearScore < MIN_VALID_GEARSCORE then
+    if gearScore < addon.MIN_VALID_GEARSCORE then
         addon:Debug("Rejecting invalid GS from sync:", playerName, gearScore)
         return false
     end
@@ -111,8 +110,7 @@ function addon:QueueInspect(playerName, unit, priority)
     if cached and cached.gearScore and cached.gearScore > 0 then
         -- Sanity check: reject suspiciously low cached scores
         -- A player with items should have at least ~150 GS (even in greens)
-        local MIN_VALID_GEARSCORE = 100
-        if cached.gearScore >= MIN_VALID_GEARSCORE then
+        if cached.gearScore >= addon.MIN_VALID_GEARSCORE then
             -- Add to session cache from persistent cache
             sessionCache[playerName] = {
                 gearScore = cached.gearScore,

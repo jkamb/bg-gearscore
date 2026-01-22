@@ -1,0 +1,15 @@
+package-as: BG-GearScore
+
+enable-nolib-creation: no
+
+ignore:
+  - .git
+  - .github
+  - .claude
+  - .gitignore
+  - "*.md"
+  - screenshots
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown

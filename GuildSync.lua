@@ -64,8 +64,8 @@ local peerSummaries = {}
 -- Callbacks for UI updates
 local syncCallbacks = {}
 
--- Rate limiting per sender
-local senderRateLimits = {}  -- [sender] = {count, resetTime}
+-- Rate limiting per sender (using utility)
+local rateLimiter = nil
 
 -- Helper: Reset sync context
 local function ResetSyncContext()
@@ -108,23 +108,17 @@ local function FireCallback(eventType, data)
     end
 end
 
--- Helper: Check rate limit for sender
+-- Helper: Check rate limit for sender (wrapper for utility)
 local function CheckRateLimit(sender)
-    local now = GetTime()
-    local limit = senderRateLimits[sender]
-
-    if not limit or now > limit.resetTime then
-        senderRateLimits[sender] = {count = 1, resetTime = now + 60}
-        return true
+    if not rateLimiter then
+        rateLimiter = addon:CreateRateLimiter(100, 60)  -- 100 messages per 60 seconds
     end
 
-    if limit.count >= 100 then  -- Max 100 messages per minute per sender
+    local allowed = rateLimiter:check(sender)
+    if not allowed then
         addon:Debug("Rate limit exceeded for", sender)
-        return false
     end
-
-    limit.count = limit.count + 1
-    return true
+    return allowed
 end
 
 -- Helper: Format message with version prefix

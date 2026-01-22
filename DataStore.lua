@@ -110,9 +110,8 @@ function addon:GetCachedPlayer(playerName)
 
     local cached = self.db.playerCache[playerName]
     if cached then
-        -- Check if cache is still valid (within expiration period)
-        local expireTime = self.db.settings.cacheExpireHours * 60 * 60
-        if (time() - (cached.timestamp or 0)) < expireTime then
+        local maxAge = self.db.settings.cacheExpireHours * 60 * 60
+        if self:IsCacheValid(cached, maxAge) then
             return cached
         else
             -- Cache expired, remove it
@@ -308,13 +307,16 @@ end
 function addon:GetFriendlyTeamGsFromMatch(match)
     if not match or not match.teams then return nil end
     -- Try both factions and return the one with data (we don't know player faction from history)
-    for faction = 0, 1 do
-        local team = match.teams[faction]
-        if team and team.avgGearScore and team.avgGearScore > 0 then
-            return team.avgGearScore
+    local result = nil
+    self:ForEachFaction(function(faction)
+        if not result then
+            local team = match.teams[faction]
+            if team and team.avgGearScore and team.avgGearScore > 0 then
+                result = team.avgGearScore
+            end
         end
-    end
-    return nil
+    end)
+    return result
 end
 
 -- Get map-specific statistics from history

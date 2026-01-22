@@ -347,29 +347,39 @@ function addon:ValidateMatch(match, sender)
     end
 
     -- Validate team stats are reasonable
-    for faction = 0, 1 do
+    local validationError = nil
+    addon:ForEachFaction(function(faction)
+        if validationError then return end  -- Skip if already failed
         local team = match.teams[faction]
 
         -- GearScore should be 0-10000 (TBC max is around 4000)
         if team.avgGearScore and (team.avgGearScore < 0 or team.avgGearScore > 10000) then
-            return false, "unreasonable avgGearScore"
+            validationError = "unreasonable avgGearScore"
+            return
         end
 
         -- Known count shouldn't exceed total
         if (team.knownCount or 0) > (team.totalCount or 0) then
-            return false, "knownCount > totalCount"
+            validationError = "knownCount > totalCount"
+            return
         end
 
         -- Total count should be reasonable (1-80 for a BG)
         if team.totalCount and (team.totalCount < 0 or team.totalCount > 80) then
-            return false, "unreasonable totalCount"
+            validationError = "unreasonable totalCount"
+            return
         end
 
         -- Level should be 1-70 for TBC (0 is allowed for teams with no data)
         if team.avgLevel and team.avgLevel ~= 0 and (team.avgLevel < 1 or team.avgLevel > 75) then
             addon:Debug("Validation failed: avgLevel =", team.avgLevel, "for faction", faction)
-            return false, "unreasonable avgLevel"
+            validationError = "unreasonable avgLevel"
+            return
         end
+    end)
+
+    if validationError then
+        return false, validationError
     end
 
     return true

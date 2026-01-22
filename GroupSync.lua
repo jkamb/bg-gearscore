@@ -136,7 +136,7 @@ function addon:GetCacheToBroadcast()
     end
 
     for playerName, data in pairs(self.db.playerCache) do
-        if data.gearScore and data.gearScore >= 100 then
+        if data.gearScore and data.gearScore >= addon.MIN_VALID_GEARSCORE then
             local age = currentTime - (data.timestamp or 0)
             if age < MAX_CACHE_AGE then
                 table.insert(candidates, {

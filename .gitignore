@@ -1,0 +1,14 @@
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Release artifacts
+*.zip
+.release/

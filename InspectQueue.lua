@@ -283,6 +283,56 @@ function addon:ProcessInspectQueue()
     end)
 end
 
+-- Helper: Verify unit is still valid for inspection
+local function VerifyInspectUnit(unit, playerName)
+    local shortName = playerName:match("^([^-]+)") or playerName
+    local unitName = UnitName(unit)
+    return UnitExists(unit) and (unitName == playerName or unitName == shortName)
+end
+
+-- Helper: Read all equipment items from unit
+local function ReadEquipmentItems(unit)
+    local items = {}
+    local hasAnyItem = false
+    local hasIncompleteItem = false
+
+    for _, slotId in ipairs(addon.EQUIPMENT_SLOTS) do
+        local itemLink = GetInventoryItemLink(unit, slotId)
+        local hasItem = GetInventoryItemID(unit, slotId)
+
+        if itemLink then
+            items[slotId] = itemLink
+            hasAnyItem = true
+            -- Check if item info is loaded
+            local _, _, _, itemLevel = GetItemInfo(itemLink)
+            if not itemLevel then
+                hasIncompleteItem = true
+            end
+        elseif hasItem then
+            -- Slot has an item but link isn't available yet
+            hasIncompleteItem = true
+        end
+    end
+
+    return items, hasAnyItem, hasIncompleteItem
+end
+
+-- Helper: Count items with links
+local function CountItems(items)
+    local count = 0
+    for _ in pairs(items) do
+        count = count + 1
+    end
+    return count
+end
+
+-- Helper: Validate GearScore is reasonable for item count
+local function IsGearScoreReasonable(gearScore, itemCount)
+    local MIN_EXPECTED_GS_PER_ITEM = 15  -- Very conservative
+    local expectedMinScore = itemCount * MIN_EXPECTED_GS_PER_ITEM
+    return gearScore == 0 or gearScore >= expectedMinScore
+end
+
 -- Handle INSPECT_READY event
 function addon:OnInspectReady()
     if not pendingInspect then
@@ -294,44 +344,17 @@ function addon:OnInspectReady()
     local playerName = pendingInspect.name
     local retryCount = pendingInspect.retryCount or 0
 
-    -- Verify it's still the expected unit
-    local shortName = playerName:match("^([^-]+)") or playerName
-    local unitName = UnitName(unit)
-    if not UnitExists(unit) or (unitName ~= playerName and unitName ~= shortName) then
+    -- Verify unit is still valid
+    if not VerifyInspectUnit(unit, playerName) then
         addon:Debug("Unit changed during inspection:", playerName)
         pendingInspect = nil
         self:ProcessInspectQueue()
         return
     end
 
-    -- Read gear data
-    local items = {}
-    local hasAnyItem = false
-    local hasIncompleteItem = false
-
+    -- Read equipment items
     addon:Debug("Reading gear for:", playerName)
-    for _, slotId in ipairs(addon.EQUIPMENT_SLOTS) do
-        local itemLink = GetInventoryItemLink(unit, slotId)
-        -- Also check if there's an item in the slot even if we can't get the link yet
-        local hasItem = GetInventoryItemID(unit, slotId)
-
-        if itemLink then
-            items[slotId] = itemLink
-            hasAnyItem = true
-            -- Check if item info is loaded (GetItemInfo returns nil for uncached items)
-            local itemName, _, quality, itemLevel = GetItemInfo(itemLink)
-            if not itemLevel then
-                hasIncompleteItem = true
-                addon:Debug("  Slot", slotId, "- item not cached:", itemLink)
-            else
-                addon:Debug("  Slot", slotId, "-", itemName, "ilvl:", itemLevel)
-            end
-        elseif hasItem then
-            -- Slot has an item but link isn't available yet
-            hasIncompleteItem = true
-            addon:Debug("  Slot", slotId, "- has item ID", hasItem, "but no link yet")
-        end
-    end
+    local items, hasAnyItem, hasIncompleteItem = ReadEquipmentItems(unit)
     addon:Debug("Found", hasAnyItem and "items" or "no items", "incomplete:", hasIncompleteItem)
 
     -- If no items found or item info not loaded yet, re-queue to back of line
@@ -362,24 +385,15 @@ function addon:OnInspectReady()
     -- TT_GS:GetScore(unit) can be unreliable during inspections as it may not see all gear
     local gearScore, itemCount = self:CalculateGearScoreFromItems(items, class)
 
-    -- Sanity check: if we have many items but a very low score, data might be incomplete
-    -- A typical TBC player with 10+ items should have at least 200+ GS
-    -- Score of 27 with 10+ items means item info wasn't loaded properly
-    local itemsWithLinks = 0
-    for _ in pairs(items) do
-        itemsWithLinks = itemsWithLinks + 1
-    end
+    -- Validate GearScore is reasonable for item count
+    local itemsWithLinks = CountItems(items)
 
-    local MIN_EXPECTED_GS_PER_ITEM = 15  -- Very conservative: even greens give more than this
-    local expectedMinScore = itemsWithLinks * MIN_EXPECTED_GS_PER_ITEM
-
-    if gearScore > 0 and gearScore < expectedMinScore and retryCount < MAX_RETRIES then
+    if not IsGearScoreReasonable(gearScore, itemsWithLinks) and retryCount < MAX_RETRIES then
         addon:Debug("GearScore suspiciously low for:", playerName,
-            "GS:", gearScore, "items:", itemsWithLinks, "expected min:", expectedMinScore,
+            "GS:", gearScore, "items:", itemsWithLinks,
             "- re-queuing (attempt", retryCount + 1, "of", MAX_RETRIES, ")")
         ClearInspectPlayer()
         pendingInspect = nil
-        -- Re-queue at back with incremented retry count
         self:RequeueInspect(playerName, unit, retryCount + 1)
         self:ProcessInspectQueue()
         return

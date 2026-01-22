@@ -38,15 +38,24 @@ function addon:SerializeMatch(match)
         if not team then
             return "0,0,0,0,0,0,0,0"
         end
-        return string.format("%d%s%d%s%s%s%s%s%d%s%d%s%d%s%d",
-            team.avgGearScore or 0, TEAM_DELIM,
-            team.medianGearScore or 0, TEAM_DELIM,
-            team.avgLevel or 0, TEAM_DELIM,
-            team.medianLevel or 0, TEAM_DELIM,
-            team.knownCount or 0, TEAM_DELIM,
-            team.totalCount or 0, TEAM_DELIM,
-            team.totalDamage or 0, TEAM_DELIM,
-            team.totalHealing or 0
+
+        -- Ensure all numeric fields are properly formatted
+        local avgGS = team.avgGearScore or 0
+        local medGS = team.medianGearScore or 0
+        local avgLvl = team.avgLevel or 0
+        local medLvl = team.medianLevel or 0
+        local known = team.knownCount or 0
+        local total = team.totalCount or 0
+        local dmg = team.totalDamage or 0
+        local heal = team.totalHealing or 0
+
+        -- Format avgLevel and medianLevel to ensure they're strings
+        -- Handle both integer and decimal values
+        local avgLvlStr = type(avgLvl) == "number" and tostring(avgLvl) or "0"
+        local medLvlStr = type(medLvl) == "number" and tostring(medLvl) or "0"
+
+        return string.format("%d,%d,%s,%s,%d,%d,%d,%d",
+            avgGS, medGS, avgLvlStr, medLvlStr, known, total, dmg, heal
         )
     end
 
@@ -121,9 +130,11 @@ function addon:DeserializeMatch(str)
     local team1 = ParseTeam(parts[8])
 
     if not team0 or not team1 then
-        addon:Debug("Deserialization failed: invalid team data")
+        addon:Debug("Deserialization failed: invalid team data, parts[7]:", parts[7] or "nil", "parts[8]:", parts[8] or "nil")
         return nil
     end
+
+    addon:Debug("Deserialized match: team0.avgLevel =", team0.avgLevel, "team1.avgLevel =", team1.avgLevel)
 
     local instanceID = tonumber(parts[3])
     -- Treat 0 as nil (no instance ID available)
@@ -200,30 +211,34 @@ function addon:DeserializeMatches(str)
 end
 
 -- Generate a unique fingerprint for a match (for deduplication)
--- Requires instanceID - matches without it cannot be synced reliably.
--- Fingerprint format: mapHash_instanceID_roundedTimestamp
+-- Fingerprint format with instanceID: mapHash_instanceID_roundedTimestamp
+-- Fallback format without instanceID: mapHash_0_exactTimestamp (less reliable, may create duplicates)
 function addon:GetMatchFingerprint(match)
     if not match or not match.mapName then
-        return nil
-    end
-
-    -- Require valid instance ID for sync
-    if not match.instanceID or match.instanceID <= 0 then
         return nil
     end
 
     -- Simple hash of map name (just use first 3 chars + length)
     local mapHash = string.sub(match.mapName, 1, 3) .. tostring(#match.mapName)
 
-    -- Include approximate timestamp (rounded to 10 min) to handle instance ID reuse
-    -- BG instance IDs can be reused after the BG ends
-    local roundedTime = math.floor((match.timestamp or 0) / 600) * 600  -- 10 min buckets
-
-    return string.format("%s_%d_%d",
-        mapHash,
-        match.instanceID,
-        roundedTime
-    )
+    if match.instanceID and match.instanceID > 0 then
+        -- Reliable fingerprint with instance ID
+        -- Include approximate timestamp (rounded to 10 min) to handle instance ID reuse
+        local roundedTime = math.floor((match.timestamp or 0) / 600) * 600  -- 10 min buckets
+        return string.format("%s_%d_%d",
+            mapHash,
+            match.instanceID,
+            roundedTime
+        )
+    else
+        -- Fallback fingerprint without instance ID
+        -- Use exact timestamp instead of rounded (less forgiving, but avoids false duplicates)
+        -- This may create duplicates if two players were in the same BG at the same time
+        return string.format("%s_0_%d",
+            mapHash,
+            match.timestamp or 0
+        )
+    end
 end
 
 -- Get fingerprints for multiple matches (for summary comparison)
@@ -350,8 +365,9 @@ function addon:ValidateMatch(match, sender)
             return false, "unreasonable totalCount"
         end
 
-        -- Level should be 1-70 for TBC
-        if team.avgLevel and (team.avgLevel < 1 or team.avgLevel > 75) then
+        -- Level should be 1-70 for TBC (0 is allowed for teams with no data)
+        if team.avgLevel and team.avgLevel ~= 0 and (team.avgLevel < 1 or team.avgLevel > 75) then
+            addon:Debug("Validation failed: avgLevel =", team.avgLevel, "for faction", faction)
             return false, "unreasonable avgLevel"
         end
     end

@@ -170,8 +170,8 @@ function addon:InitializeGuildSync()
     -- Register for addon messages
     addon:RegisterEvent("CHAT_MSG_ADDON", function(event, prefix, message, channel, sender)
         if prefix == ADDON_PREFIX then
-            -- Route guild sync messages
-            if channel == "GUILD" then
+            -- Route guild sync messages (both GUILD broadcasts and WHISPER direct messages)
+            if channel == "GUILD" or channel == "WHISPER" then
                 self:OnGuildMessage(message, sender)
             -- Route group sync messages
             elseif (channel == "PARTY" or channel == "RAID") and addon.OnGroupMessage then
@@ -330,16 +330,29 @@ function addon:OnResponseWindowClosed()
 
     -- Determine what we need
     local history = self:GetMatchHistory()
+    local ourCount = #history
     local ourLastTimestamp = (history[1] and history[1].timestamp) or 0
 
-    -- Request matches newer than our newest
+    -- If peer has significantly more matches with same or older newest timestamp,
+    -- request full history (they have older matches we're missing)
+    local peerSummary = peerSummaries[bestPeer]
+    local requestTimestamp = ourLastTimestamp
+
+    if peerSummary and peerSummary.matchCount > ourCount + 5 and
+       peerSummary.lastTimestamp <= ourLastTimestamp then
+        -- Peer has many more matches but same/older newest - request from beginning
+        requestTimestamp = 0
+        addon:Debug("Peer has", peerSummary.matchCount, "matches vs our", ourCount, "- requesting full history")
+    end
+
+    -- Request matches newer than threshold
     syncState = SYNC_STATES.REQUESTING
     syncContext.peer = bestPeer
 
-    local payload = tostring(ourLastTimestamp)
+    local payload = tostring(requestTimestamp)
     self:QueueMessage(FormatMessage(MSG_TYPES.REQUEST, payload), bestPeer)
 
-    addon:Debug("Requesting data from", bestPeer, "since", ourLastTimestamp)
+    addon:Debug("Requesting data from", bestPeer, "since", requestTimestamp)
     FireCallback("SYNC_PROGRESS", {status = "Requesting data from " .. bestPeer, progress = 0.2})
 end
 
@@ -398,12 +411,53 @@ function addon:OnAnnounce(sender, payload)
     local ourCount = #history
     local ourTimestamp = (history[1] and history[1].timestamp) or 0
 
-    -- If we have newer/more data, respond with summary
-    if ourTimestamp > lastTimestamp or ourCount > matchCount then
-        -- Random delay to avoid collision
-        C_Timer.After(math.random() * 2, function()
-            local respPayload = string.format("%d,%d", ourCount, ourTimestamp)
-            self:QueueMessage(FormatMessage(MSG_TYPES.SUMMARY, respPayload))
+    -- Always respond with our summary so the requester knows what data we have
+    -- Random delay to avoid collision
+    C_Timer.After(math.random() * 2, function()
+        local respPayload = string.format("%d,%d", ourCount, ourTimestamp)
+        self:QueueMessage(FormatMessage(MSG_TYPES.SUMMARY, respPayload))
+    end)
+
+    -- If they have newer/more data AND we're idle, request it from them directly
+    local theyHaveNewerData = lastTimestamp > ourTimestamp or matchCount > ourCount
+    if theyHaveNewerData and syncState == SYNC_STATES.IDLE then
+        -- Random delay to avoid collision with other potential requesters
+        C_Timer.After(math.random() * 3, function()
+            if syncState == SYNC_STATES.IDLE then
+                addon:Debug("Peer has newer data, requesting directly from", sender)
+
+                -- Set up sync state
+                ResetSyncContext()
+                syncContext.startTime = GetTime()
+                syncContext.peer = sender
+                syncContext.isManual = false
+                messagesSentThisSession = 0
+
+                -- Determine request timestamp
+                -- If peer has significantly more matches with same/older newest timestamp,
+                -- request full history (they have older matches we're missing)
+                local requestTimestamp = ourTimestamp
+                if matchCount > ourCount + 5 and lastTimestamp <= ourTimestamp then
+                    -- Peer has many more matches but same/older newest - request from beginning
+                    requestTimestamp = 0
+                    addon:Debug("Peer has", matchCount, "matches vs our", ourCount, "- requesting full history")
+                end
+
+                -- Request matches
+                syncState = SYNC_STATES.REQUESTING
+                local payload = tostring(requestTimestamp)
+                self:QueueMessage(FormatMessage(MSG_TYPES.REQUEST, payload), sender)
+
+                -- Start timeout timer
+                syncTimeoutTimer = C_Timer.NewTimer(SYNC_TIMEOUT, function()
+                    if syncState ~= SYNC_STATES.IDLE then
+                        self:AbortSync("Timeout")
+                    end
+                end)
+
+                FireCallback("SYNC_STARTED", {isManual = false, peer = sender})
+                FireCallback("SYNC_PROGRESS", {status = "Requesting data from " .. sender, progress = 0.2})
+            end
         end)
     end
 end
@@ -435,16 +489,14 @@ function addon:OnRequest(sender, payload)
     -- Parse: afterTimestamp
     local afterTimestamp = tonumber(payload) or 0
 
-    -- Get matches newer than requested timestamp (only those with valid instanceID)
+    -- Get matches newer than requested timestamp
     local history = self:GetMatchHistory()
     local matchesToSend = {}
 
     for _, match in ipairs(history) do
         if match.timestamp > afterTimestamp then
-            -- Only sync matches with a valid instanceID (required for deduplication)
-            if match.instanceID and match.instanceID > 0 then
-                table.insert(matchesToSend, match)
-            end
+            -- Sync all matches (fingerprint function now handles matches without instanceID)
+            table.insert(matchesToSend, match)
         end
         if #matchesToSend >= MAX_MATCHES_PER_SYNC then
             break

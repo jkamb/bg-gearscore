@@ -5,6 +5,8 @@ local addonName, addon = ...
 
 local minimapButton = nil
 local isDragging = false
+local isSyncing = false
+local syncSpinAngle = 0
 
 -- Create the minimap button
 function addon:CreateMinimapButton()
@@ -37,6 +39,15 @@ function addon:CreateMinimapButton()
     highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
     highlight:SetBlendMode("ADD")
     highlight:SetPoint("CENTER", 0, 0)
+
+    -- Sync indicator (spinning arrows overlay)
+    local syncIndicator = button:CreateTexture(nil, "OVERLAY")
+    syncIndicator:SetSize(20, 20)
+    syncIndicator:SetTexture("Interface\\COMMON\\StreamCircle")  -- Circular arrows texture
+    syncIndicator:SetPoint("CENTER", 0, 0)
+    syncIndicator:SetVertexColor(0.2, 0.8, 1, 0.9)  -- Blue tint
+    syncIndicator:Hide()
+    button.syncIndicator = syncIndicator
 
     -- Click handler
     button:SetScript("OnClick", function(self, btn)
@@ -146,7 +157,56 @@ function addon:ToggleMinimapButton()
     end
 end
 
+-- Start sync animation on minimap button
+function addon:StartMinimapSyncAnimation()
+    if not minimapButton or not minimapButton.syncIndicator then return end
+    if isSyncing then return end
+
+    isSyncing = true
+    syncSpinAngle = 0
+    minimapButton.syncIndicator:Show()
+
+    -- Spin animation
+    minimapButton:SetScript("OnUpdate", function(self, elapsed)
+        if not isSyncing then return end
+        if isDragging then return end  -- Don't animate while dragging
+
+        syncSpinAngle = syncSpinAngle + elapsed * 180  -- 180 degrees per second
+        if syncSpinAngle >= 360 then
+            syncSpinAngle = syncSpinAngle - 360
+        end
+
+        -- Rotate the sync indicator
+        local rad = math.rad(syncSpinAngle)
+        minimapButton.syncIndicator:SetRotation(rad)
+    end)
+end
+
+-- Stop sync animation on minimap button
+function addon:StopMinimapSyncAnimation()
+    if not minimapButton or not minimapButton.syncIndicator then return end
+
+    isSyncing = false
+    minimapButton.syncIndicator:Hide()
+
+    -- Remove OnUpdate unless we're dragging
+    if not isDragging then
+        minimapButton:SetScript("OnUpdate", nil)
+    end
+end
+
 -- Initialize on addon load
 function addon:InitializeMinimapButton()
     self:CreateMinimapButton()
+
+    -- Register for sync callbacks to animate minimap button
+    if addon.RegisterSyncCallback then
+        addon:RegisterSyncCallback(function(eventType, data)
+            if eventType == "SYNC_STARTED" then
+                addon:StartMinimapSyncAnimation()
+            elseif eventType == "SYNC_COMPLETE" or eventType == "SYNC_ERROR" then
+                addon:StopMinimapSyncAnimation()
+            end
+        end)
+    end
 end

@@ -12,6 +12,12 @@ local DEFAULT_DB = {
         maxHistoryEntries = 100,
         cacheExpireHours = 4,  -- Cache expires after 4 hours
         debugMode = false,
+        -- Guild sync settings
+        guildSyncEnabled = true,
+        guildSyncInterval = 1800,  -- 30 minutes between auto-syncs
+        lastGuildSyncTime = 0,
+        -- Group sync settings
+        groupSyncEnabled = true,
     },
     history = {},
     playerCache = {},
@@ -35,6 +41,14 @@ function addon:InitializeDataStore()
 
     -- Clean up old cache entries
     self:CleanupCache()
+
+    -- Always clear player's own cache on load to ensure fresh GearScore calculation
+    -- This prevents stale cached GearScore from showing after gear upgrades
+    local playerName = UnitName("player")
+    if playerName and self.db.playerCache then
+        self.db.playerCache[playerName] = nil
+        addon:Debug("Cleared own player cache for fresh GearScore calculation")
+    end
 
     addon:Debug("DataStore initialized")
 end
@@ -159,6 +173,7 @@ function addon:AddMatchToHistory(matchData)
     local record = {
         timestamp = time(),
         mapName = matchData.mapName or "Unknown",
+        instanceID = matchData.instanceID,  -- BG instance ID for sync deduplication
         result = matchData.result or "unknown",
         duration = matchData.duration or 0,
         teams = matchData.teams or {},
@@ -393,6 +408,96 @@ function addon:CalculateWinPrediction(mapName, friendlyGS, friendlyLvl, enemyLvl
     ))
 
     return math.floor(prediction + 0.5), false, 0
+end
+
+-- Guild Sync Functions
+
+-- Merge a match from guild sync into local history
+-- Uses fingerprint to check for duplicates, keeps version with higher knownCount
+-- Returns: true if this was a conflict (existing match was updated/kept)
+function addon:MergeMatch(match)
+    if not self.db or not self.db.history then return false end
+    if not match or not match.timestamp or not match.mapName then return false end
+
+    -- Calculate fingerprint for comparison
+    local newFingerprint = self:GetMatchFingerprint(match)
+    if not newFingerprint then return false end
+
+    -- Calculate knownCount for new match
+    local newKnownCount = self:GetMatchKnownCount(match)
+
+    -- Check for existing match with same fingerprint
+    for i, existing in ipairs(self.db.history) do
+        local existingFingerprint = self:GetMatchFingerprint(existing)
+
+        if existingFingerprint == newFingerprint then
+            -- Found duplicate - check which has more data
+            local existingKnownCount = self:GetMatchKnownCount(existing)
+
+            if newKnownCount > existingKnownCount then
+                -- New match has more data - replace
+                self.db.history[i] = self:DeepCopy(match)
+                addon:Debug("Merged match (replaced):", match.mapName, "knownCount:", newKnownCount, ">", existingKnownCount)
+                return true  -- Was a conflict, resolved by replacement
+            else
+                -- Keep existing
+                addon:Debug("Merged match (kept existing):", match.mapName, "knownCount:", existingKnownCount, ">=", newKnownCount)
+                return true  -- Was a conflict, kept existing
+            end
+        end
+    end
+
+    -- No duplicate found - add as new match
+    -- Insert in chronological position (history is sorted newest-first)
+    local inserted = false
+    for i, existing in ipairs(self.db.history) do
+        if match.timestamp > existing.timestamp then
+            table.insert(self.db.history, i, self:DeepCopy(match))
+            inserted = true
+            break
+        end
+    end
+
+    if not inserted then
+        -- Oldest match, add at end
+        table.insert(self.db.history, self:DeepCopy(match))
+    end
+
+    -- Trim history to max entries
+    while #self.db.history > self.db.settings.maxHistoryEntries do
+        table.remove(self.db.history)
+    end
+
+    addon:Debug("Merged match (new):", match.mapName)
+    return false  -- Not a conflict, was new
+end
+
+-- Get matches newer than a given timestamp (for incremental sync)
+function addon:GetMatchesSince(timestamp)
+    if not self.db or not self.db.history then return {} end
+
+    local matches = {}
+    for _, match in ipairs(self.db.history) do
+        if match.timestamp > timestamp then
+            table.insert(matches, match)
+        else
+            -- History is sorted newest-first, so we can stop
+            break
+        end
+    end
+    return matches
+end
+
+-- Check if a match with given fingerprint exists
+function addon:HasMatchWithFingerprint(fingerprint)
+    if not self.db or not self.db.history or not fingerprint then return false end
+
+    for _, match in ipairs(self.db.history) do
+        if self:GetMatchFingerprint(match) == fingerprint then
+            return true
+        end
+    end
+    return false
 end
 
 -- Get prediction accuracy statistics

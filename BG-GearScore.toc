@@ -4,13 +4,17 @@
 ## Author: BG-GearScore Team
 ## Version: @project-version@
 ## SavedVariables: BGGearScoreDB
-## OptionalDeps: TacoTip
+## Dependencies: TacoTip
 
 Core.lua
 GearScore.lua
 DataStore.lua
+SyncSerializer.lua
+GuildSync.lua
+GroupSync.lua
 InspectQueue.lua
 BattlegroundTracker.lua
 UI/ScoreboardFrame.lua
 UI/HistoryFrame.lua
 UI/MinimapButton.lua
+UI/SyncStatusFrame.lua

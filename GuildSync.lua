@@ -155,11 +155,7 @@ function addon:InitializeGuildSync()
     end
 
     -- Register addon message prefix (TBC API)
-    if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
-        C_ChatInfo.RegisterAddonMessagePrefix(ADDON_PREFIX)
-    elseif RegisterAddonMessagePrefix then
-        RegisterAddonMessagePrefix(ADDON_PREFIX)
-    end
+    C_ChatInfo.RegisterAddonMessagePrefix(ADDON_PREFIX)
 
     -- Register for addon messages
     addon:RegisterEvent("CHAT_MSG_ADDON", function(event, prefix, message, channel, sender)

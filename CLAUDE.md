@@ -18,18 +18,18 @@ This is a WoW addon with no build system. Files are loaded directly by the game 
 
 ### Module Loading Order (from TOC)
 1. **Core.lua** - Event system, slash commands, utility functions. Creates the `addon` namespace shared by all modules.
-2. **GearScore.lua** - Wraps TacoTip's `TT_GS:GetItemScore()` API with class-specific modifiers (Hunter weapon scaling, Titan's Grip).
+2. **GearScore.lua** - Thin wrapper around TacoTip's GearScore API for color/rating helpers.
 3. **DataStore.lua** - SavedVariables (`BGGearScoreDB`), player cache, match history, win prediction calculations.
-4. **InspectQueue.lua** - Throttled inspection system. Queues players, handles `INSPECT_READY` events, retries on incomplete data.
+4. **InspectQueue.lua** - Fast scan system using TacoTip cache, delegates inspections to LibClassicInspector.
 5. **BattlegroundTracker.lua** - BG detection, team tracking, scoreboard data aggregation, combat rating calculations.
 6. **UI/** - ScoreboardFrame, HistoryFrame, MinimapButton
 
 ### Key Data Flow
 1. `BattlegroundTracker` detects BG entry and triggers fast scan via TacoTip cache
-2. `FastScanTacoTipCache()` instantly checks all raid members against TacoTip's cache
-3. For cache misses, players are queued for inspection in `InspectQueue`
-4. `ProcessInspectQueue()` tries TacoTip cache first before falling back to `NotifyInspect(unit)`
-5. On `INSPECT_READY`, item links are collected and passed to `GearScore.CalculateGearScoreFromItems()`
+2. `FastScanTacoTipCache()` instantly checks all raid members against TacoTip's cache via `TT_GS:GetScore(unit)`
+3. For cache misses, `QueueInspect()` uses `LibClassicInspector:DoInspect(unit)` to queue inspection
+4. LibClassicInspector handles the actual inspection and updates TacoTip's cache
+5. Next periodic fast scan picks up newly cached data from TacoTip
 6. Results are cached in both session cache (InspectQueue) and persistent cache (DataStore)
 7. UI updates via `OnPlayerInspected` callback
 8. Periodic fast scans continue checking TacoTip cache every 5 seconds
@@ -38,23 +38,22 @@ This is a WoW addon with no build system. Files are loaded directly by the game 
 All modules receive `(addonName, addon)` and attach their functions to `addon`. Core initializes modules via `addon:Initialize*()` functions called from `ADDON_LOADED`.
 
 ### TacoTip Integration (Required Dependency)
-TacoTip is **required** and the addon will not load without it. GearScore calculation uses:
-- `TT_GS:GetScore(unit)` - Primary method, uses TacoTip's cache for instant results when available
-- `TT_GS:GetItemScore(itemLink)` - Fallback for manual item-by-item calculation during inspections
+TacoTip is **required** and the addon will not load without it. We rely entirely on TacoTip's GearScore calculation:
+- `TT_GS:GetScore(unit)` - Primary and **only** method for retrieving GearScore
+- `TT_GS:GetQuality(score)` - Get color gradient for display
+- `LibClassicInspector:DoInspect(unit)` - Queue inspections to populate TacoTip's cache
 
-**Fast Scanning Strategy:**
+**Simplified Scanning Strategy:**
 1. Try `TT_GS:GetScore(unit)` first - returns instantly if TacoTip has cached the data (no range requirement)
-2. If cache miss, fall back to full inspection with `NotifyInspect(unit)` (requires 28yd range)
-3. Periodic fast scans check all raid members against TacoTip's cache without inspection overhead
-4. Range checks only apply to the fallback inspection path, not TacoTip cache lookups
+2. If cache miss, use `LibClassicInspector:DoInspect(unit)` to queue inspection
+3. LibClassicInspector handles inspection throttling, retries, and updates TacoTip's cache
+4. Periodic fast scans (every 5 seconds) check all raid members against TacoTip's cache
+5. All GearScore calculation and class-specific modifiers are handled by TacoTip
 
-Class-specific modifiers are applied manually when using `GetItemScore`:
-- Hunter: melee weapons × 0.3164, ranged × 5.3224
-- Titan's Grip: weapons × 0.5 when dual-wielding 2H
-
-### Inspection Throttling
-Server limits inspections to ~1 second intervals. The optimized queue handles this with:
-- `INSPECT_THROTTLE = 0.5` seconds between inspections (reduced due to TacoTip cache optimization)
-- Re-queuing to back of queue on incomplete data (up to 5 retries)
-- `GetInventoryItemID()` check to detect items with missing links
-- Fast-path via TacoTip cache bypasses throttle entirely
+**No Manual Inspection:**
+We no longer handle `INSPECT_READY` events or manually calculate GearScore. TacoTip and LibClassicInspector handle all inspection complexity including:
+- Inspection throttling (~1-2 second server limits)
+- Range requirements (28yd for NotifyInspect)
+- Item cache loading and retries
+- Class-specific modifiers (Hunter weapon scaling, Titan's Grip)
+- Item-by-item GearScore calculation

@@ -54,22 +54,6 @@ function addon:ForEachFaction(callback)
     end
 end
 
--- Timer management helpers
-
--- Create a cancellable timer with automatic cleanup
-function addon:CreateTimer(delay, callback)
-    local timer = C_Timer.After(delay, callback)
-    return timer
-end
-
--- Cancel a timer if it exists
-function addon:CancelTimer(timer)
-    if timer then
-        timer:Cancel()
-    end
-    return nil
-end
-
 -- Rate limiting utility
 
 -- Create a new rate limiter

@@ -152,20 +152,6 @@ function addon:OnEnterBattleground()
     addon:Debug("Entered BG:", currentBG, "Instance:", bgInstanceID or "unknown")
     addon:Print("Entered " .. currentBG .. " - Tracking friendly team GearScore")
 
-    -- Retry getting BG name if we still have "Unknown Battleground"
-    -- This handles cases where instance info isn't available immediately
-    if currentBG == "Unknown Battleground" then
-        C_Timer.After(2, function()
-            if addon:IsInBattleground() and currentBG == "Unknown Battleground" then
-                local newName = addon:GetBattlegroundName()
-                if newName and newName ~= "Unknown Battleground" then
-                    currentBG = newName
-                    addon:Debug("Updated BG name to:", currentBG)
-                end
-            end
-        end)
-    end
-
     -- Auto-show scoreboard if enabled
     if self:GetSetting("autoShowInBG") and self.ShowScoreboard then
         C_Timer.After(2, function()
@@ -331,35 +317,20 @@ function addon:OnScoreboardUpdate()
                 playerData.gearScore = self:GetPlayerGearScore(shortName)
             end
 
-            -- Special handling for player's own GearScore (can't inspect self)
+            -- Special handling for player's own GearScore
             local myName = UnitName("player")
             if (name == myName or shortName == myName) and not playerData.gearScore then
-                local unit = "player"
-                if unit then
-                    local items = {}
-                    for _, slotId in ipairs(self.EQUIPMENT_SLOTS) do
-                        local itemLink = GetInventoryItemLink(unit, slotId)
-                        if itemLink then
-                            items[slotId] = itemLink
-                        end
-                    end
-                    local _, class = UnitClass(unit)
-                    local calculatedGS, itemCount = self:CalculateGearScoreFromItems(items, class)
-                    if calculatedGS and calculatedGS > 0 then
-                        playerData.gearScore = calculatedGS
-                        -- Update cache for future use
-                        self:CachePlayer(name, {
-                            gearScore = calculatedGS,
-                            class = class,
-                            itemCount = itemCount
-                        })
-                        -- Update session cache too
-                        self:AddToSessionCache(name, {
-                            gearScore = calculatedGS,
-                            class = class,
-                            itemCount = itemCount
-                        })
-                    end
+                local ttScore = TT_GS:GetScore("player")
+                if ttScore and ttScore > 0 then
+                    local _, class = UnitClass("player")
+                    local data = {
+                        gearScore = ttScore,
+                        class = class,
+                        itemCount = 16,
+                    }
+                    playerData.gearScore = ttScore
+                    self:CachePlayer(name, data)
+                    self:AddToSessionCache(name, data)
                 end
             end
 

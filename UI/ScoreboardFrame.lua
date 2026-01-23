@@ -365,13 +365,8 @@ function addon:UpdateScoreboardUI()
         end
     end
 
-    -- Update queue status
-    local queueSize = self:GetInspectQueueSize()
-    if queueSize > 0 then
-        scoreboardFrame.queueStatus:SetText(string.format("Inspecting... (%d queued)", queueSize))
-    else
-        scoreboardFrame.queueStatus:SetText("Scan complete")
-    end
+    -- Update scan status
+    scoreboardFrame.queueStatus:SetText("Scan complete")
 end
 
 -- Abbreviate large numbers (e.g., 1234567 -> 1.2M)

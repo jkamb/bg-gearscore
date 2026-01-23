@@ -2,8 +2,6 @@ package-as: BG-GearScore
 
 enable-nolib-creation: no
 
-curse-project-id: 1441928
-
 ignore:
   - .git
   - .github

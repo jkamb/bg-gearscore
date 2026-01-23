@@ -5,6 +5,7 @@
 ## Version: @project-version@
 ## SavedVariables: BGGearScoreDB
 ## Dependencies: TacoTip
+## X-Curse-Project-ID: 1441928
 
 Core.lua
 Utils.lua

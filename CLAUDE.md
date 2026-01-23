@@ -14,6 +14,8 @@ This is a WoW addon with no build system. Files are loaded directly by the game 
 
 **Packaging:** Uses pkgmeta.yaml for CurseForge/WoWInterface packaging. Version is set via `@project-version@` token.
 
+**Working Documentation:** Put temporary work-in-progress documentation, analysis files, and notes in the `/docs/` directory (gitignored). Only commit documentation that should be version controlled (like CHANGELOG.md, this file, etc.) to the root directory.
+
 ## Architecture
 
 ### Module Loading Order (from TOC)

@@ -5,6 +5,9 @@
 # Claude Code
 .claude/
 
+# Working documentation (not for version control)
+/docs/
+
 # OS files
 .DS_Store
 Thumbs.db
